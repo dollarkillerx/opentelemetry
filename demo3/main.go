@@ -3,8 +3,12 @@ package main
 import (
 	"context"
 	"fmt"
+	"github.com/XSAM/otelsql"
+	_ "github.com/lib/pq"
 	"github.com/rs/zerolog/log"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
 	"net/http"
 	"os"
 	"runtime"
@@ -26,6 +30,8 @@ import (
 
 var tracer = otel.Tracer("github.com/zinclabs/otel-example")
 
+var gormDB *gorm.DB
+
 func main() {
 	// tp := tel.InitTracerGRPC()
 	tp := InitTracerHTTP()
@@ -34,6 +40,19 @@ func main() {
 			fmt.Println("Error shutting down tracer provider: ", err)
 		}
 	}()
+
+	// sql
+	db, err := otelsql.Open("postgres", "host=127.0.0.1 port=5432 user=root password=root dbname=eye_truth_test sslmode=disable", otelsql.WithAttributes(
+		semconv.DBSystemProgress,
+	))
+	if err != nil {
+		panic(err)
+	}
+	gormDB, err = gorm.Open(postgres.New(postgres.Config{
+		Conn: db,
+	}), &gorm.Config{})
+
+	// sql end
 
 	router := gin.Default()
 
@@ -50,6 +69,11 @@ func GetUser(c *gin.Context) {
 
 	// sleep for 1 second to simulate a slow request
 	time.Sleep(1 * time.Second)
+
+	err := gormDB.WithContext(ctx).Raw(`SELECT * FROM orders`).Error
+	if err != nil {
+		panic(err)
+	}
 
 	childCtx, span := tracer.Start(ctx, "GetUser")
 	defer span.End()
@@ -152,18 +176,12 @@ func InitTracerHTTP() *sdktrace.TracerProvider {
 		}),
 	)
 
-	// stdExporter, _ := stdouttrace.New(
-	// 	stdouttrace.WithWriter(io.Writer(os.Stdout)),
-	// 	stdouttrace.WithPrettyPrint(),
-	// )
-
 	if err != nil {
 		fmt.Println("Error creating HTTP OTLP exporter: ", err)
 	}
 
 	res := resource.NewWithAttributes(
 		semconv.SchemaURL,
-		// the service name used to display traces in backends
 		semconv.ServiceNameKey.String("otel1-gin-gonic"),
 		semconv.ServiceVersionKey.String("0.0.1"),
 		attribute.String("environment", "test"),
@@ -173,7 +191,6 @@ func InitTracerHTTP() *sdktrace.TracerProvider {
 		sdktrace.WithSampler(sdktrace.AlwaysSample()),
 		sdktrace.WithResource(res),
 		sdktrace.WithBatcher(otlpHTTPExporter),
-		// sdktrace.WithBatcher(stdExporter),
 	)
 	otel.SetTracerProvider(tp)
 
